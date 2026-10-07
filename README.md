@@ -6,6 +6,7 @@ YouTube・Instagram・TikTok・X などの動画の URL を貼り付けると、
 - 管理者がこの Mac で開く場所: http://localhost:3939
 - 複数の URL を改行で貼れる。チャンネルや再生リストの URL は一覧から選んで保存する
 - 保存先は画面でフォルダを選ぶ（Chrome と Edge）。Safari などはブラウザの既定のダウンロードフォルダに入る
+- 保存するものを「動画」「動画＋文字起こし」「文字起こし」から選べる。文字起こしは動画と同じ名前の `.txt`（1文1行）と `.srt`（時刻付きの字幕）。日本語だけに対応
 
 ## 仕組み
 
@@ -13,7 +14,7 @@ YouTube・Instagram・TikTok・X などの動画の URL を貼り付けると、
 社員のブラウザ ─ Cloudflare Access（PIN）─ Cloudflare Tunnel ─ この Mac の next start（127.0.0.1:3939）─ yt-dlp / ffmpeg
 ```
 
-1. yt-dlp がこの Mac の `~/Library/Caches/SNS-Downloader/files/<ジョブ ID>/` に MP4 を作る
+1. yt-dlp がこの Mac の `~/Library/Caches/SNS-Downloader/files/<ジョブ ID>/` に MP4 を作る。文字起こしを頼まれたら、macOS の SpeechTranscriber（`bin/transcribe`、`scripts/transcribe.swift` をビルドしたもの）で `.txt` と `.srt` を作る。1本ずつ順に処理し、10分の動画で10秒ほど
 2. ブラウザがそれを受け取り、選んだフォルダへ書く。書き終えたらこの Mac のファイルは消す
 3. 受け取られなかったファイルは 6 時間で消す。yt-dlp は毎日 `brew upgrade` する
 

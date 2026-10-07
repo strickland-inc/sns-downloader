@@ -4,13 +4,14 @@ import { connection } from "next/server";
 import { authorize } from "@/lib/server/auth";
 import { markDelivered, markHanded, readyFile } from "@/lib/server/jobs";
 
-// 保存した MP4 をブラウザへ渡す
+// 保存したファイル（動画・テキスト・字幕）をブラウザへ渡す。?name= でどれかを指す
 export async function GET(request: Request, ctx: RouteContext<"/api/jobs/[id]/file">): Promise<Response> {
   await connection();
   const auth = await authorize(request, { mutating: false });
   if (!auth.ok) return auth.response;
   const { id } = await ctx.params;
-  const file = readyFile(auth.user, id);
+  const name = new URL(request.url).searchParams.get("name") ?? "";
+  const file = readyFile(auth.user, id, name);
   if (!file) {
     return Response.json(
       { error: { message: "ファイルがありません", hint: "時間がたって削除されました。もう一度保存してください。" } },
@@ -21,7 +22,13 @@ export async function GET(request: Request, ctx: RouteContext<"/api/jobs/[id]/fi
   const ascii = file.name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
   return new Response(stream, {
     headers: {
-      "Content-Type": "video/mp4",
+      "Content-Type": file.name.endsWith(".mp4")
+        ? "video/mp4"
+        : file.name.endsWith(".srt")
+          ? "application/x-subrip; charset=utf-8"
+          : file.name.endsWith(".txt")
+            ? "text/plain; charset=utf-8"
+            : "application/octet-stream",
       "Content-Length": String(file.size),
       "Content-Disposition": `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
       "Cache-Control": "private, no-store",

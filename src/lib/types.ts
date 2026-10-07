@@ -35,10 +35,20 @@ export interface AppError {
   hint?: string;
 }
 
+// 保存するもの。text は文字起こしだけ（動画は保存しない）
+export type SaveKind = "video" | "both" | "text";
+
+export interface SavedFile {
+  name: string;
+  size: number;
+  kind: "video" | "text" | "subtitle";
+}
+
 export type JobStatus =
   | "queued"
   | "running"
   | "finishing"
+  | "transcribing"
   | "done"
   | "error"
   | "canceled";
@@ -47,15 +57,17 @@ export interface JobView extends VideoMeta {
   id: string;
   url: string;
   playlistIndex?: number;
+  kind: SaveKind;
   status: JobStatus;
   stream?: "video" | "audio";
   percent?: number;
   speed?: number;
   eta?: number;
-  fileName?: string;
-  fileSize?: number;
-  // サーバーに置いた MP4 の状態。ready の間だけブラウザが取りに来られる
+  files?: SavedFile[];
+  // サーバーに置いたファイルの状態。ready の間だけブラウザが取りに来られる
   fileState?: "ready" | "delivered" | "expired";
+  // 動画は保存できたが文字起こしができなかったときの説明
+  transcriptNote?: string;
   error?: AppError;
   createdAt: number;
   finishedAt?: number;
@@ -64,10 +76,12 @@ export interface JobView extends VideoMeta {
 export interface NewJobInput extends VideoMeta {
   url: string;
   playlistIndex?: number;
+  kind: SaveKind;
 }
 
 export const ACTIVE_STATUSES: readonly JobStatus[] = [
   "queued",
   "running",
   "finishing",
+  "transcribing",
 ];

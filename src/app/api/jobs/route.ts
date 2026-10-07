@@ -2,7 +2,9 @@ import { connection } from "next/server";
 import { authorize, isHttpUrl, readJson } from "@/lib/server/auth";
 import { clearFinished, createJobs, listJobs } from "@/lib/server/jobs";
 import { isPublicUrl } from "@/lib/server/target";
-import type { NewJobInput } from "@/lib/types";
+import type { NewJobInput, SaveKind } from "@/lib/types";
+
+const KINDS: readonly SaveKind[] = ["video", "both", "text"];
 
 const MAX_BATCH = 500;
 
@@ -23,8 +25,10 @@ function toInput(value: unknown): NewJobInput | null {
     typeof v.playlistIndex === "number" && Number.isInteger(v.playlistIndex) && v.playlistIndex > 0
       ? v.playlistIndex
       : undefined;
+  const kind = KINDS.find((k) => k === v.kind) ?? "video";
   return {
     url: v.url,
+    kind,
     playlistIndex: index,
     title: text(v.title, 300) ?? v.url,
     uploader: text(v.uploader, 200),

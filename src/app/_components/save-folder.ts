@@ -88,20 +88,31 @@ async function exists(dir: FileSystemDirectoryHandle, name: string): Promise<boo
   }
 }
 
-// 同じ名前があれば「名前 (2).mp4」のようにずらす
-async function freeName(dir: FileSystemDirectoryHandle, name: string): Promise<string> {
-  if (!(await exists(dir, name))) return name;
+function splitName(name: string): { stem: string; ext: string } {
   const dot = name.lastIndexOf(".");
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : "";
-  for (let i = 2; i < 1000; i++) {
-    const candidate = `${stem} (${i})${ext}`;
-    if (!(await exists(dir, candidate))) return candidate;
-  }
-  return `${stem} (${Date.now()})${ext}`;
+  return dot > 0 ? { stem: name.slice(0, dot), ext: name.slice(dot) } : { stem: name, ext: "" };
 }
 
-// サーバーの MP4 を選んだフォルダへ流し込む。onProgress には書いたバイト数を渡す
+// 同じ名前があれば「名前 (2).mp4」のようにずらす。動画と字幕は同じ名前でないと
+// プレーヤーが字幕を読まないので、1本の動画のファイルには同じ番号を付ける
+export async function planNames(dir: FileSystemDirectoryHandle, names: readonly string[]): Promise<string[]> {
+  for (let i = 1; i < 1000; i++) {
+    const candidates = names.map((n) => {
+      if (i === 1) return n;
+      const { stem, ext } = splitName(n);
+      return `${stem} (${i})${ext}`;
+    });
+    const taken = await Promise.all(candidates.map((c) => exists(dir, c)));
+    if (!taken.some(Boolean)) return candidates;
+  }
+  const stamp = Date.now();
+  return names.map((n) => {
+    const { stem, ext } = splitName(n);
+    return `${stem} (${stamp})${ext}`;
+  });
+}
+
+// サーバーのファイルを選んだフォルダへ流し込む。name は planNames で決めた名前をそのまま使う
 export async function writeToFolder(
   dir: FileSystemDirectoryHandle,
   response: Response,
@@ -109,7 +120,7 @@ export async function writeToFolder(
   onProgress: (written: number) => void,
 ): Promise<{ name: string; written: number }> {
   if (!response.body) throw new Error("サーバーから中身が届きませんでした");
-  const finalName = await freeName(dir, name);
+  const finalName = name;
   const fileHandle = await dir.getFileHandle(finalName, { create: true });
   const writable = await fileHandle.createWritable();
   let written = 0;

@@ -24,6 +24,9 @@ if [[ -z "$NODE" ]]; then
 fi
 
 build() {
+  # 文字起こしに使う SpeechTranscriber の小さな実行ファイル。macOS 26 と Xcode の swiftc が要る
+  mkdir -p "$APP_DIR/bin"
+  swiftc -O "$APP_DIR/scripts/transcribe.swift" -o "$APP_DIR/bin/transcribe"
   (cd "$APP_DIR" && npm install --no-audit --no-fund >/dev/null && npx next build >/dev/null)
 }
 
@@ -93,6 +96,11 @@ case "${1:-}" in
   restart)
     build
     launchctl kickstart -k "$DOMAIN/$APP_LABEL"
+    # 本体が SIGKILL で止まると exit の後始末が走らず、別グループの子が残る。
+    # 再起動直後は新しいジョブが無いので、残っているものはすべて前の本体の子
+    pkill -f "$APP_DIR/bin/transcribe" 2>/dev/null || true
+    pkill -f "Caches/SNS-Downloader/files" 2>/dev/null || true
+    pkill -f "sns-downloader/.*_tr/audio.wav" 2>/dev/null || true
     wait_until_up
     ;;
   uninstall)

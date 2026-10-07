@@ -35,7 +35,7 @@ export const api = {
   cancel: (id: string) => call<unknown>(`/api/jobs/${id}?action=cancel`, { method: "DELETE" }),
   remove: (id: string) => call<unknown>(`/api/jobs/${id}`, { method: "DELETE" }),
   clearFinished: () => call<unknown>("/api/jobs", { method: "DELETE" }),
-  fileUrl: (id: string) => `/api/jobs/${id}/file`,
+  fileUrl: (id: string, name: string) => `/api/jobs/${id}/file?name=${encodeURIComponent(name)}`,
   // 保存先へ書き終えたら、サーバー側の一時ファイルを消してもらう
   delivered: (id: string) => call<unknown>(`/api/jobs/${id}/file`, { method: "DELETE" }),
   // 通常のダウンロードに渡しただけのとき。サーバーは消す時刻を早める

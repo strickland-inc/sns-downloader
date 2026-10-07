@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ACTIVE_STATUSES, type JobView, type NewJobInput } from "@/lib/types";
+import { ACTIVE_STATUSES, type JobView, type NewJobInput, type SaveKind } from "@/lib/types";
 import { api } from "./api";
 import { Composer } from "./composer";
 import { extractUrls } from "./format";
@@ -15,6 +15,17 @@ const POLL_MS = 1000;
 // これより本数が少ない一覧（Instagram のカルーセルなど）は最初から全部選んでおく
 const AUTO_SELECT_MAX = 20;
 
+const KIND_KEY = "sns-downloader:kind";
+
+function loadKind(): SaveKind {
+  try {
+    const v = localStorage.getItem(KIND_KEY);
+    return v === "both" || v === "text" ? v : "video";
+  } catch {
+    return "video";
+  }
+}
+
 let keySeq = 0;
 const nextKey = (): string => `p${++keySeq}`;
 
@@ -23,6 +34,7 @@ export function Downloader(): React.ReactElement {
   const [previews, setPreviews] = useState<PreviewItem[]>([]);
   const [jobs, setJobs] = useState<JobView[]>([]);
   const [saving, setSaving] = useState(false);
+  const [kind, setKind] = useState<SaveKind>("video");
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -43,7 +55,17 @@ export function Downloader(): React.ReactElement {
   // 初回の読み込み。結果はコールバックで受け取る（effect の中で直接 setState しない）
   useEffect(() => {
     void api.jobs().then((r) => r.ok && setJobs(r.data.jobs));
+    void Promise.resolve().then(() => setKind(loadKind()));
   }, []);
+
+  const changeKind = (next: SaveKind): void => {
+    setKind(next);
+    try {
+      localStorage.setItem(KIND_KEY, next);
+    } catch {
+      // 覚えられなくても切り替え自体はできる
+    }
+  };
 
   const save = useLocalSave(jobs, refreshJobs);
 
@@ -141,12 +163,13 @@ export function Downloader(): React.ReactElement {
 
   const selectedInputs = (): NewJobInput[] =>
     previews.flatMap((item): NewJobInput[] => {
-      if (item.state === "video") return item.selected ? [{ url: item.url, ...item.meta }] : [];
+      if (item.state === "video") return item.selected ? [{ url: item.url, kind, ...item.meta }] : [];
       if (item.state !== "list") return [];
       return item.list.entries
         .filter((e) => item.selected.includes(e.key))
         .map((e) => ({
           url: e.url,
+          kind,
           playlistIndex: e.playlistIndex,
           title: e.title,
           uploader: e.uploader ?? item.list.uploader,
@@ -189,7 +212,9 @@ export function Downloader(): React.ReactElement {
 
   const handleRetryJob = async (job: JobView): Promise<void> => {
     const { url, playlistIndex, title, uploader, site, thumbnail, duration } = job;
-    const r = await api.createJobs([{ url, playlistIndex, title, uploader, site, thumbnail, duration }]);
+    const r = await api.createJobs([
+      { url, playlistIndex, title, uploader, site, thumbnail, duration, kind: job.kind ?? "video" },
+    ]);
     if (!r.ok) {
       showToast(r.error.hint ?? r.error.message);
       return;
@@ -235,6 +260,8 @@ export function Downloader(): React.ReactElement {
             onSave={() => void handleSave()}
             selectedCount={selectedCount}
             saving={saving}
+            kind={kind}
+            onKindChange={changeKind}
           />
         )}
 

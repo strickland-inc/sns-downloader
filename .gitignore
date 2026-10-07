@@ -42,3 +42,6 @@ next-env.d.ts
 
 # 公開情報だけを置いた本番設定は追跡する
 !.env.production
+
+# scripts/launchd.sh がビルドする文字起こしの実行ファイル
+/bin/

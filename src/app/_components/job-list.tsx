@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertCircle, CheckCircle2, RotateCw, X } from "lucide-react";
-import type { JobView } from "@/lib/types";
+import type { JobView, SavedFile } from "@/lib/types";
 import { api } from "./api";
 import { formatBytes, formatDuration, formatEta, joinMeta } from "./format";
 import { IconButton } from "./preview-list";
@@ -45,7 +45,7 @@ export function JobList(props: JobListProps): React.ReactElement {
             <div className="min-w-0 flex-1">
               <p className="line-clamp-1 text-[14px] font-medium text-ink">{job.title}</p>
               <p className="mt-0.5 truncate text-[12px] text-ink-2">
-                {joinMeta([job.site, job.uploader, formatDuration(job.duration)])}
+                {joinMeta([job.site, job.uploader, formatDuration(job.duration), KIND_LABEL[job.kind ?? "video"]])}
               </p>
               <JobStatusLine job={job} local={props.local[job.id]} />
             </div>
@@ -61,6 +61,8 @@ function JobStatusLine({ job, local }: { job: JobView; local?: LocalSave }): Rea
   switch (job.status) {
     case "queued":
       return <p className="mt-2 text-[12px] text-ink-3">順番待ち</p>;
+    case "transcribing":
+      return <Progress label="文字起こし中" />;
     case "running":
     case "finishing":
       return job.status === "finishing" ? (
@@ -93,6 +95,22 @@ function JobStatusLine({ job, local }: { job: JobView; local?: LocalSave }): Rea
   }
 }
 
+const KIND_LABEL: Record<NonNullable<JobView["kind"]>, string | undefined> = {
+  video: undefined,
+  both: "動画＋文字起こし",
+  text: "文字起こしのみ",
+};
+
+// 保存したものの説明。「動画と文字起こし（txt・srt）」のように書く
+function describeFiles(files: readonly SavedFile[] | undefined): string | undefined {
+  if (!files || files.length === 0) return undefined;
+  const hasVideo = files.some((f) => f.kind === "video");
+  const hasText = files.some((f) => f.kind !== "video");
+  const size = formatBytes(files.reduce((n, f) => n + f.size, 0));
+  const what = hasVideo && hasText ? "動画と文字起こし" : hasVideo ? "動画" : "文字起こし（txt・srt）";
+  return joinMeta([what, size]);
+}
+
 function Progress({ percent, label }: { percent?: number; label: string }): React.ReactElement {
   return (
     <div className="mt-2">
@@ -109,7 +127,7 @@ function Progress({ percent, label }: { percent?: number; label: string }): Reac
 
 function DoneLine({ job, local }: { job: JobView; local?: LocalSave }): React.ReactElement {
   if (local?.phase === "writing") {
-    const percent = job.fileSize ? Math.min(100, (local.written / job.fileSize) * 100) : undefined;
+    const percent = local.total ? Math.min(100, (local.written / local.total) * 100) : undefined;
     return (
       <Progress
         percent={percent}
@@ -125,13 +143,14 @@ function DoneLine({ job, local }: { job: JobView; local?: LocalSave }): React.Re
       </p>
     );
   }
+  const what = describeFiles(job.files);
   const saved =
     local?.phase === "saved"
-      ? joinMeta(["保存しました", formatBytes(job.fileSize), `${local.folder}/${local.name}`])
+      ? joinMeta(["保存しました", what, `${local.folder}/${local.name}`])
       : local?.phase === "handed"
-        ? joinMeta(["ブラウザのダウンロードに渡しました", formatBytes(job.fileSize)])
+        ? joinMeta(["ブラウザのダウンロードに渡しました", what])
         : job.fileState === "delivered"
-          ? joinMeta(["保存しました", formatBytes(job.fileSize), job.fileName])
+          ? joinMeta(["保存しました", what])
           : undefined;
   if (saved) {
     return (
@@ -142,10 +161,15 @@ function DoneLine({ job, local }: { job: JobView; local?: LocalSave }): React.Re
         </p>
         {/* ブラウザがダウンロードを止めたときに取り直せるよう、受け取り期限まではリンクを出す */}
         {local?.phase === "handed" && job.fileState === "ready" && (
-          <a href={api.fileUrl(job.id)} download className="mt-1 inline-block pl-5 text-ink underline underline-offset-2">
-            もう一度ダウンロードする
-          </a>
+          <p className="mt-1 flex flex-wrap gap-x-3 pl-5">
+            {(job.files ?? []).map((f) => (
+              <a key={f.name} href={api.fileUrl(job.id, f.name)} download className="text-ink underline underline-offset-2">
+                {f.kind === "video" ? "動画" : f.kind === "text" ? "テキスト" : "字幕"}をもう一度ダウンロード
+              </a>
+            ))}
+          </p>
         )}
+        {job.transcriptNote && <p className="mt-1 pl-5 text-ink-3">文字起こしなし：{job.transcriptNote}</p>}
       </div>
     );
   }
@@ -156,7 +180,7 @@ function DoneLine({ job, local }: { job: JobView; local?: LocalSave }): React.Re
 }
 
 function JobActions({ job, ...p }: { job: JobView } & JobListProps): React.ReactElement {
-  if (job.status === "queued" || job.status === "running" || job.status === "finishing") {
+  if (job.status === "queued" || job.status === "running" || job.status === "finishing" || job.status === "transcribing") {
     return <IconButton label="取り消す" onClick={() => p.onCancel(job.id)} icon={<X size={16} />} />;
   }
   return (

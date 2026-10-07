@@ -1,7 +1,8 @@
 "use client";
 
 import { AlertCircle, ArrowDown, Check, ChevronRight, Loader2, RotateCw, X } from "lucide-react";
-import type { AppError, ProbeEntry, ProbeResult, VideoMeta } from "@/lib/types";
+import type { AppError, ProbeEntry, ProbeResult, SaveKind, VideoMeta } from "@/lib/types";
+import { KindSwitch } from "./kind-switch";
 import { formatDuration, joinMeta } from "./format";
 import { Thumb } from "./thumb";
 
@@ -25,6 +26,8 @@ interface PreviewListProps {
   onSave: () => void;
   selectedCount: number;
   saving: boolean;
+  kind: SaveKind;
+  onKindChange: (kind: SaveKind) => void;
 }
 
 export function PreviewList(props: PreviewListProps): React.ReactElement {
@@ -54,9 +57,10 @@ export function PreviewList(props: PreviewListProps): React.ReactElement {
         ))}
       </ul>
 
-      <div className="sticky bottom-4 z-10 mt-4 flex items-center justify-between gap-3 rounded-full border border-line bg-white/95 py-2 pr-2 pl-5 shadow-[0_4px_24px_rgba(0,0,0,0.08)] backdrop-blur">
-        <p className="text-[13px] text-ink-2">
-          {loading ? "動画の情報を読み込み中…" : `${selectedCount} 本を選択中`}
+      <div className="sticky bottom-4 z-10 mt-4 flex flex-wrap items-center justify-between gap-2 rounded-[28px] border border-line bg-white/95 py-2 pr-2 pl-2 shadow-[0_4px_24px_rgba(0,0,0,0.08)] backdrop-blur sm:flex-nowrap sm:rounded-full">
+        <KindSwitch value={props.kind} onChange={props.onKindChange} />
+        <p className="min-w-0 flex-1 truncate px-2 text-right text-[13px] text-ink-2">
+          {loading ? "読み込み中…" : `${selectedCount} 本を選択中`}
         </p>
         <button
           type="button"

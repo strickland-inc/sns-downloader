@@ -11,9 +11,11 @@ import {
   statfsSync,
   writeFileSync,
 } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { ACTIVE_STATUSES, type JobView, type NewJobInput } from "@/lib/types";
+import { basename, extname, join } from "node:path";
+import { ACTIVE_STATUSES, type JobView, type NewJobInput, type SavedFile } from "@/lib/types";
+import { toSrt, toText, transcribe } from "@/lib/server/transcript";
 import { YTDLP, childEnv, commonArgs, explainError } from "@/lib/server/ytdlp";
 
 const MAX_PARALLEL = 3;
@@ -51,7 +53,12 @@ interface Job extends JobView {
 interface Store {
   jobs: Map<string, Job>;
   queue: string[];
+  // yt-dlp。数がそのまま同時ダウンロードの枠になる
   children: Map<string, ChildProcess>;
+  // 文字起こし中の ffmpeg と認識プロセス。ダウンロードの枠とは別に数える
+  transcribers: Map<string, ChildProcess>;
+  // 文字起こしは1本ずつ順に行う。Neural Engine を取り合うと全体が遅くなる
+  transcribeChain: Promise<void>;
   cancelRequested: Set<string>;
   loaded: boolean;
 }
@@ -62,9 +69,14 @@ const store: Store = (globalStore.__snsDownloader ??= {
   jobs: new Map(),
   queue: [],
   children: new Map(),
+  transcribers: new Map(),
+  transcribeChain: Promise.resolve(),
   cancelRequested: new Set(),
   loaded: false,
 });
+// 古い形の store が globalThis に残っていても動くように
+store.transcribers ??= new Map();
+store.transcribeChain ??= Promise.resolve();
 
 function isActive(job: JobView): boolean {
   return ACTIVE_STATUSES.includes(job.status);
@@ -90,7 +102,10 @@ function loadHistory(): void {
     const raw: unknown = JSON.parse(readFileSync(HISTORY_FILE, "utf8"));
     if (!Array.isArray(raw)) return;
     for (const item of raw as unknown[]) {
-      if (isStoredJob(item) && !isActive(item)) store.jobs.set(item.id, item);
+      if (!isStoredJob(item) || isActive(item)) continue;
+      // 文字起こしを足す前の記録には files が無い。受け取りに来ても渡せないので期限切れにする
+      if (item.fileState === "ready" && !item.files?.length) item.fileState = "expired";
+      store.jobs.set(item.id, item);
     }
   } catch {
     // 初回起動や壊れたファイルは空の履歴から始める
@@ -158,6 +173,7 @@ export function createJobs(owner: string, inputs: readonly NewJobInput[]): Creat
       site: input.site,
       thumbnail: input.thumbnail,
       duration: input.duration,
+      kind: input.kind,
       status: "queued",
       createdAt: Date.now(),
     };
@@ -172,6 +188,18 @@ export function createJobs(owner: string, inputs: readonly NewJobInput[]): Creat
 export function cancelJob(owner: string, id: string): void {
   const job = ownJob(owner, id);
   if (!job || !isActive(job)) return;
+  if (job.status === "transcribing") {
+    store.cancelRequested.add(id);
+    const running = store.transcribers.get(id);
+    if (running) {
+      killGroup(running);
+    } else {
+      // 順番待ちの間に取り消したもの。番が来ても isActive で飛ばされる
+      rmSync(join(FILES_ROOT, id), { recursive: true, force: true });
+      finish(job, { status: "canceled" });
+    }
+    return;
+  }
   const child = store.children.get(id);
   if (child) {
     store.cancelRequested.add(id);
@@ -194,10 +222,11 @@ function killGroup(child: ChildProcess): void {
 // サーバーが止まるとき、別のプロセスグループで動く yt-dlp と ffmpeg も止める
 export function killAllChildren(): void {
   for (const child of store.children.values()) killGroup(child);
+  for (const child of store.transcribers.values()) killGroup(child);
 }
 
 export function hasActiveJobs(): boolean {
-  return store.children.size > 0 || store.queue.length > 0;
+  return [...store.jobs.values()].some(isActive);
 }
 
 function dropFile(job: Job, state: "delivered" | "expired"): void {
@@ -226,12 +255,16 @@ export function clearFinished(owner: string): void {
   saveHistory();
 }
 
-// ブラウザが受け取りに来たファイル。持ち主のジョブで、まだ消していないものだけ返す
-export function readyFile(owner: string, id: string): { path: string; name: string; size: number } | null {
+// ブラウザが受け取りに来たファイル。持ち主のジョブで、まだ消していないものだけ返す。
+// name はジョブの files にある名前だけ受け付ける（パスを組み立てる前に照合する）
+export function readyFile(owner: string, id: string, name: string): { path: string; name: string; size: number } | null {
   const job = ownJob(owner, id);
-  if (!job || job.status !== "done" || job.fileState !== "ready" || !job.filePath) return null;
-  if (!existsSync(job.filePath)) return null;
-  return { path: job.filePath, name: basename(job.filePath), size: statSync(job.filePath).size };
+  if (!job || job.status !== "done" || job.fileState !== "ready") return null;
+  const entry = job.files?.find((f) => f.name === name);
+  if (!entry) return null;
+  const path = join(FILES_ROOT, job.id, entry.name);
+  if (!existsSync(path)) return null;
+  return { path, name: entry.name, size: statSync(path).size };
 }
 
 // ブラウザが保存先へ書き終えたら、この Mac からは消す
@@ -274,7 +307,7 @@ export function sweepFiles(): void {
   }
   try {
     for (const name of readdirSync(TEMP_ROOT)) {
-      const job = store.jobs.get(name);
+      const job = store.jobs.get(name.replace(/_tr$/, ""));
       if (!job || !isActive(job)) rmSync(join(TEMP_ROOT, name), { recursive: true, force: true });
     }
   } catch {
@@ -317,14 +350,16 @@ function freeBytes(dir: string): number {
 }
 
 function downloadArgs(job: Job, outDir: string, tempDir: string): string[] {
+  const format =
+    job.kind === "text"
+      ? // 文字起こしだけなら音声だけを落とす。音声だけの形式が無いサイトは動画ごと
+        ["-f", "ba/b"]
+      : // QuickTime と iPhone でそのまま再生できる H.264 + AAC を優先する。
+        // -S は並べ替えなので、H.264 が無いサイトでは他の形式で落ちる。
+        ["-f", "bv*+ba/b", "-S", "vcodec:h264,res,acodec:m4a", "--merge-output-format", "mp4", "--remux-video", "mp4"];
   const args = [
     ...commonArgs(),
-    // QuickTime と iPhone でそのまま再生できる H.264 + AAC を優先する。
-    // -S は並べ替えなので、H.264 が無いサイトでは他の形式で落ちる。
-    "-f", "bv*+ba/b",
-    "-S", "vcodec:h264,res,acodec:m4a",
-    "--merge-output-format", "mp4",
-    "--remux-video", "mp4",
+    ...format,
     "--embed-metadata",
     "--max-filesize", String(MAX_FILE_BYTES),
     // 更新日時を投稿日にしない。保存先が ~/Downloads の自動整理のように
@@ -425,14 +460,7 @@ function start(job: Job, attempt = 1): void {
     }
     cleanupTemp();
     if (code === 0 && job.filePath && existsSync(job.filePath)) {
-      finish(job, {
-        status: "done",
-        percent: 100,
-        fileName: basename(job.filePath),
-        fileSize: statSync(job.filePath).size,
-        fileState: "ready",
-        fileExpiresAt: Date.now() + FILE_TTL_MS,
-      });
+      afterDownload(job, outDir, job.filePath);
       return;
     }
     rmSync(outDir, { recursive: true, force: true });
@@ -442,6 +470,83 @@ function start(job: Job, attempt = 1): void {
         ? { message: "4GB を超える動画は保存できません" }
         : explainError(stderr || "ダウンロードが途中で止まりました"),
     });
+  });
+}
+
+function fileEntry(path: string, kind: SavedFile["kind"]): SavedFile {
+  return { name: basename(path), size: statSync(path).size, kind };
+}
+
+function afterDownload(job: Job, outDir: string, media: string): void {
+  if (job.kind === "video") {
+    finish(job, {
+      status: "done",
+      percent: 100,
+      files: [fileEntry(media, "video")],
+      fileState: "ready",
+      fileExpiresAt: Date.now() + FILE_TTL_MS,
+    });
+    return;
+  }
+  // ダウンロードの枠を空けてから、文字起こしの順番を待つ
+  job.status = "transcribing";
+  job.percent = undefined;
+  job.speed = undefined;
+  job.eta = undefined;
+  store.children.delete(job.id);
+  pump();
+  store.transcribeChain = store.transcribeChain
+    .then(() => runTranscription(job, outDir, media))
+    .catch((e: unknown) => {
+      console.error(`[${job.id}] 文字起こしで想定外の失敗`, e);
+      finish(job, { status: "error", error: { message: "文字起こしに失敗しました" } });
+    });
+}
+
+async function runTranscription(job: Job, outDir: string, media: string): Promise<void> {
+  // 順番待ちの間に取り消されたり、一覧から消されたりしたもの
+  if (!isActive(job) || !store.jobs.has(job.id)) return;
+  const canceled = (): boolean => store.cancelRequested.has(job.id) || !isActive(job);
+  const work = join(TEMP_ROOT, `${job.id}_tr`);
+  mkdirSync(work, { recursive: true });
+  const result = await transcribe(
+    media,
+    work,
+    job.duration,
+    (child) => (child ? store.transcribers.set(job.id, child) : store.transcribers.delete(job.id)),
+    canceled,
+  );
+  rmSync(work, { recursive: true, force: true });
+  if (canceled()) {
+    rmSync(outDir, { recursive: true, force: true });
+    finish(job, { status: "canceled" });
+    return;
+  }
+
+  const base = join(outDir, basename(media, extname(media)));
+  const files: SavedFile[] = [];
+  if (result.ok) {
+    writeFileSync(`${base}.txt`, toText(result.cues));
+    writeFileSync(`${base}.srt`, toSrt(result.cues));
+    files.push(fileEntry(`${base}.txt`, "text"), fileEntry(`${base}.srt`, "subtitle"));
+  }
+  if (job.kind === "text") {
+    await unlink(media).catch(() => undefined);
+    if (!result.ok) {
+      rmSync(outDir, { recursive: true, force: true });
+      finish(job, { status: "error", error: { message: result.message } });
+      return;
+    }
+  } else {
+    files.unshift(fileEntry(media, "video"));
+  }
+  finish(job, {
+    status: "done",
+    percent: 100,
+    files,
+    fileState: "ready",
+    fileExpiresAt: Date.now() + FILE_TTL_MS,
+    transcriptNote: result.ok ? undefined : result.message,
   });
 }
 

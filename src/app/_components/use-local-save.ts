@@ -10,12 +10,13 @@ import {
   hasPermission,
   loadFolder,
   pickFolder,
+  planNames,
   writeToFolder,
   type DirectoryHandle,
 } from "./save-folder";
 
 export type LocalSave =
-  | { phase: "writing"; written: number }
+  | { phase: "writing"; written: number; total: number }
   | { phase: "saved"; folder: string; name: string }
   | { phase: "handed" }
   | { phase: "error"; message: string };
@@ -135,7 +136,8 @@ export function useLocalSave(jobs: readonly JobView[], onDelivered: () => void):
         attempted.current.add(job.id);
         if (!handed.has(job.id)) {
           addId(HANDED_KEY, job.id);
-          handToBrowser(api.fileUrl(job.id));
+          // 続けて渡すと Chrome は2本目から「複数ファイルのダウンロード」の許可を求める
+          (job.files ?? []).forEach((f, i) => setTimeout(() => handToBrowser(api.fileUrl(job.id, f.name)), i * 400));
           void api.handed(job.id);
         }
         patch(job.id, { phase: "handed" });
@@ -149,28 +151,39 @@ export function useLocalSave(jobs: readonly JobView[], onDelivered: () => void):
       // 1本ずつ書く。並べて書くとディスクとネットワークを取り合う
       for (const job of fresh) {
         attempted.current.add(job.id);
-        patch(job.id, { phase: "writing", written: 0 });
+        const files = job.files ?? [];
+        if (files.length === 0) {
+          patch(job.id, { phase: "error", message: "保存するファイルがありません" });
+          continue;
+        }
+        const total = files.reduce((n, f) => n + f.size, 0);
+        patch(job.id, { phase: "writing", written: 0, total });
         let lastPaint = 0;
+        let done = 0;
+        const written: string[] = [];
         try {
-          const res = await fetch(api.fileUrl(job.id), { cache: "no-store" });
-          if (!res.ok) {
-            throw new Error(res.status === 404 ? "サーバー上のファイルが削除されていました" : `受け取りに失敗しました（${res.status}）`);
+          const names = await planNames(handle, files.map((f) => f.name));
+          for (const [index, file] of files.entries()) {
+            const res = await fetch(api.fileUrl(job.id, file.name), { cache: "no-store" });
+            if (!res.ok) {
+              throw new Error(res.status === 404 ? "サーバー上のファイルが削除されていました" : `受け取りに失敗しました（${res.status}）`);
+            }
+            const out = await writeToFolder(handle, res, names[index], (n) => {
+              // 1チャンクごとに描画すると大きな動画で何万回も再描画するので間引く
+              const now = performance.now();
+              if (now - lastPaint < PROGRESS_INTERVAL_MS) return;
+              lastPaint = now;
+              patch(job.id, { phase: "writing", written: done + n, total });
+            });
+            written.push(out.name);
+            if (out.written !== file.size) throw new Error("途中で通信が切れました。もう一度お試しください");
+            done += out.written;
           }
-          const { name, written } = await writeToFolder(handle, res, job.fileName ?? `${job.id}.mp4`, (n) => {
-            // 1チャンクごとに描画すると大きな動画で何万回も再描画するので間引く
-            const now = performance.now();
-            if (now - lastPaint < PROGRESS_INTERVAL_MS) return;
-            lastPaint = now;
-            patch(job.id, { phase: "writing", written: n });
-          });
-          if (job.fileSize !== undefined && written !== job.fileSize) {
-            await handle.removeEntry(name).catch(() => undefined);
-            throw new Error("途中で通信が切れました。もう一度お試しください");
-          }
-          patch(job.id, { phase: "saved", folder: handle.name, name });
+          patch(job.id, { phase: "saved", folder: handle.name, name: written[0] ?? "" });
           const d = await api.delivered(job.id);
           if (!d.ok) addId(SAVED_KEY, job.id);
         } catch (e: unknown) {
+          for (const name of written) await handle.removeEntry(name).catch(() => undefined);
           const { message, permissionLost } = describeWriteError(e);
           if (permissionLost) setGranted(false);
           patch(job.id, { phase: "error", message });
