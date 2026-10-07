@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-noto-sans-jp), "Hiragino Sans", system-ui, sans-serif;
+
+  --color-ink: #0d0d0d;
+  --color-ink-2: #5d5d5d;
+  --color-ink-3: #8f8f8f;
+  --color-line: #e5e5e5;
+  --color-surface: #f4f4f4;
+  --color-surface-2: #ececec;
+  --color-danger: #c4320a;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: #ffffff;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: #d9e7ff;
+}
