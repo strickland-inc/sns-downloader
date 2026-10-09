@@ -186,10 +186,7 @@ export function Downloader(): React.ReactElement {
     if (inputs.length === 0) return;
     // フォルダ選択と書き込みの許可は、クリックの直後でないと出せない
     const ready = await save.prepare();
-    if (!ready.ok) {
-      showToast(ready.message ?? "保存先のフォルダを選んでください");
-      return;
-    }
+    if (ready.message) showToast(ready.message);
     const sentKeys = new Set(
       previews
         .filter((i) => (i.state === "video" && i.selected) || (i.state === "list" && i.selected.length > 0))

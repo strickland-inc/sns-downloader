@@ -52,6 +52,11 @@ export async function loadFolder(): Promise<DirectoryHandle | null> {
   }
 }
 
+// 選んだフォルダを忘れ、ブラウザの通常のダウンロードに戻す
+export async function forgetFolder(): Promise<void> {
+  await withStore("readwrite", (s) => s.delete(KEY)).catch(() => undefined);
+}
+
 export type PickResult = { ok: true; handle: DirectoryHandle } | { ok: false; message?: string };
 
 // 利用者の操作（クリック）の中で呼ぶ。キャンセルなら message なし
@@ -63,7 +68,7 @@ export async function pickFolder(): Promise<PickResult> {
     return { ok: true, handle };
   } catch (e: unknown) {
     if (e instanceof DOMException && e.name === "AbortError") return { ok: false };
-    // Chrome はホームやシステムのフォルダそのものを選ばせない
+    // Chrome はダウンロード・書類・デスクトップなどのフォルダそのものを選ばせない
     return { ok: false, message: "このフォルダは選べません。中に新しいフォルダを作って、それを選んでください" };
   }
 }

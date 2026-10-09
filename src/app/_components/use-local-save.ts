@@ -9,6 +9,7 @@ import {
   handToBrowser,
   hasPermission,
   loadFolder,
+  forgetFolder,
   pickFolder,
   planNames,
   writeToFolder,
@@ -52,6 +53,7 @@ export interface LocalSaveApi {
   needsPermission: boolean;
   local: Readonly<Record<string, LocalSave>>;
   chooseFolder: () => Promise<{ ok: boolean; message?: string }>;
+  resetFolder: () => void;
   prepare: () => Promise<{ ok: boolean; message?: string }>;
   grant: () => Promise<void>;
   retry: (id: string) => void;
@@ -89,14 +91,24 @@ export function useLocalSave(jobs: readonly JobView[], onDelivered: () => void):
     return { ok };
   }, []);
 
-  // 「保存」を押したときに呼ぶ。フォルダ未選択なら選ばせ、書き込みの許可も取る
+  const resetFolder = useCallback(() => {
+    void forgetFolder();
+    setHandle(null);
+    setGranted(false);
+  }, []);
+
+  // 「保存」を押したときに呼ぶ。フォルダを選んでいなければ、ブラウザの通常のダウンロードで受け取る。
+  // Chrome はダウンロードフォルダそのものを選ばせないので、フォルダ選びは任意にしている
   const prepare = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {
-    if (mode !== "folder") return { ok: true };
-    if (!handle) return chooseFolder();
+    if (mode !== "folder" || !handle) return { ok: true };
     const ok = await hasPermission(handle, true);
     setGranted(ok);
-    return { ok };
-  }, [mode, handle, chooseFolder]);
+    if (!ok) {
+      resetFolder();
+      return { ok: true, message: `「${handle.name}」への書き込みが許可されなかったので、ダウンロードフォルダに保存します` };
+    }
+    return { ok: true };
+  }, [mode, handle, resetFolder]);
 
   const grant = useCallback(async () => {
     if (handle) setGranted(await hasPermission(handle, true));
@@ -130,7 +142,7 @@ export function useLocalSave(jobs: readonly JobView[], onDelivered: () => void):
     const fresh = pending.filter((j) => !savedBefore.has(j.id));
     if (fresh.length === 0) return;
 
-    if (mode === "browser") {
+    if (mode === "browser" || !handle) {
       const handed = readIds(HANDED_KEY);
       for (const job of fresh) {
         attempted.current.add(job.id);
@@ -200,6 +212,7 @@ export function useLocalSave(jobs: readonly JobView[], onDelivered: () => void):
     needsPermission: mode === "folder" && Boolean(handle) && !granted && hasReady,
     local,
     chooseFolder,
+    resetFolder,
     prepare,
     grant,
     retry,
